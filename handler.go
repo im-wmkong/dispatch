@@ -3,13 +3,13 @@ package dispatch
 import "context"
 
 // Handler executes business logic with bound and validated parameters.
-type Handler[P, R any] interface {
-	Handle(ctx context.Context, params P) (R, error)
+type Handler[Params, Output any] interface {
+	Handle(ctx context.Context, params Params) (Output, error)
 }
 
 // HandlerFunc adapts a function to Handler.
-type HandlerFunc[P, R any] func(ctx context.Context, params P) (R, error)
+type HandlerFunc[Params, Output any] func(ctx context.Context, params Params) (Output, error)
 
-func (f HandlerFunc[P, R]) Handle(ctx context.Context, params P) (R, error) {
+func (f HandlerFunc[Params, Output]) Handle(ctx context.Context, params Params) (Output, error) {
 	return f(ctx, params)
 }

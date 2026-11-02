@@ -26,45 +26,59 @@ func (greetAction) Handle(_ context.Context, params greetParams) (string, error)
 }
 
 func main() {
-	registry := dispatch.NewRegistry[string]()
+	dispatcher := dispatch.New[string, string]()
+	lengthDispatcher := dispatch.New[string, int]()
 
-	err := dispatch.Register(
-		registry,
+	err := dispatcher.Register(
 		"greet_func",
-		dispatch.BinderFunc[string, greetParams](func(_ context.Context, input string) (greetParams, error) {
-			var params greetParams
-			err := json.Unmarshal([]byte(input), &params)
-			return params, err
-		}),
-		dispatch.HandlerFunc[greetParams, string](func(_ context.Context, params greetParams) (string, error) {
-			return fmt.Sprintf("Hello, %s!", params.Name), nil
-		}),
+		dispatch.NewAction(
+			dispatch.BinderFunc[string, greetParams](func(_ context.Context, input string) (greetParams, error) {
+				var params greetParams
+				err := json.Unmarshal([]byte(input), &params)
+				return params, err
+			}),
+			dispatch.HandlerFunc[greetParams, string](func(_ context.Context, params greetParams) (string, error) {
+				return fmt.Sprintf("Hello, %s!", params.Name), nil
+			}),
+		),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	greet := greetAction{}
-	if err := dispatch.Register(registry, "greet_struct", greet, greet); err != nil {
+	if err := dispatcher.Register("greet_struct", dispatch.NewAction(greet, greet)); err != nil {
 		log.Fatal(err)
 	}
-
-	dispatcher, err := dispatch.NewDispatcher(registry)
-	if err != nil {
+	if err := lengthDispatcher.Register(
+		"name_length",
+		dispatch.NewAction(
+			greet,
+			dispatch.HandlerFunc[greetParams, int](func(_ context.Context, params greetParams) (int, error) {
+				return len(params.Name), nil
+			}),
+		),
+	); err != nil {
 		log.Fatal(err)
 	}
 
 	input := `{"name":"Alice"}`
-
-	funcOutput, err := dispatcher.Dispatch(context.Background(), "greet_func", input)
+	var output string
+	output, err = dispatcher.Dispatch(context.Background(), "greet_func", input)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(funcOutput)
+	fmt.Println(output)
 
-	structOutput, err := dispatcher.Dispatch(context.Background(), "greet_struct", input)
+	output, err = dispatcher.Dispatch(context.Background(), "greet_struct", input)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(structOutput)
+	fmt.Println(output)
+
+	length, err := lengthDispatcher.Dispatch(context.Background(), "name_length", input)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Name length: %d\n", length)
 }

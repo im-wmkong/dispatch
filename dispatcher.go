@@ -7,31 +7,67 @@ import (
 	"github.com/go-playground/validator/v10"
 )
 
-// Dispatcher performs runtime action selection for one Registry input type.
-// It is safe for concurrent use.
-type Dispatcher[I any] struct {
-	registry *Registry[I]
+// Dispatcher manages and executes Actions with one input and output type.
+// It uses a Registry to store actions and is safe for concurrent use.
+type Dispatcher[Input, Output any] struct {
+	registry *Registry[Input, Output]
 	validate *validator.Validate
 }
 
-func NewDispatcher[I any](registry *Registry[I]) (*Dispatcher[I], error) {
+// New creates a Dispatcher with its own Registry. Use Register and Unregister
+// to manage actions and Dispatch to execute them.
+func New[Input, Output any]() *Dispatcher[Input, Output] {
+	registry := NewRegistry[Input, Output]()
+	// NewDispatcher only rejects nil registries; NewRegistry always returns a non-nil one.
+	dispatcher, _ := NewDispatcher(registry)
+	return dispatcher
+}
+
+// NewDispatcher creates a Dispatcher using the given Registry.
+// Input and Output are inferred from registry. A nil registry returns ErrInvalidAction.
+func NewDispatcher[Input, Output any](registry *Registry[Input, Output]) (*Dispatcher[Input, Output], error) {
 	if registry == nil {
 		return nil, fmt.Errorf("%w: registry is nil", ErrInvalidAction)
 	}
 
-	registry.seal()
-	return &Dispatcher[I]{registry: registry, validate: validator.New()}, nil
+	return &Dispatcher[Input, Output]{
+		registry: registry,
+		validate: validator.New(validator.WithRequiredStructEnabled()),
+	}, nil
 }
 
-func (d *Dispatcher[I]) Dispatch(ctx context.Context, name string, input I) (any, error) {
-	actionInvoker, exists := d.registry.lookup(name)
-	if !exists {
-		return nil, fmt.Errorf("%w: %q", ErrActionNotFound, name)
+// Register validates an Action definition and stores it under a unique name.
+// It delegates to Registry.Register, preserving its validation and errors.
+func (d *Dispatcher[Input, Output]) Register(name string, action Action[Input, Output]) error {
+	if d == nil || d.registry == nil {
+		return fmt.Errorf("%w: dispatcher is nil or uninitialized", ErrInvalidAction)
 	}
+	return d.registry.Register(name, action)
+}
 
-	result, err := actionInvoker.invoke(ctx, input, d.validate)
+// Unregister removes an action's name mapping using Registry.Unregister.
+// Calls that already obtained the action continue independently.
+func (d *Dispatcher[Input, Output]) Unregister(name string) error {
+	if d == nil || d.registry == nil {
+		return fmt.Errorf("%w: dispatcher is nil or uninitialized", ErrInvalidAction)
+	}
+	return d.registry.Unregister(name)
+}
+
+// Dispatch executes the named Action and returns its strongly typed output.
+// On failure it returns the zero value of Output and the error.
+func (d *Dispatcher[Input, Output]) Dispatch(ctx context.Context, name string, input Input) (Output, error) {
+	var zero Output
+	if d == nil || d.registry == nil {
+		return zero, fmt.Errorf("%w: dispatcher is nil or uninitialized", ErrInvalidAction)
+	}
+	registered, exists := d.registry.lookup(name)
+	if !exists {
+		return zero, fmt.Errorf("%w: %q", ErrActionNotFound, name)
+	}
+	result, err := registered.invoke(ctx, input, d.validate)
 	if err != nil {
-		return nil, fmt.Errorf("dispatch action %q: %w", name, err)
+		return zero, fmt.Errorf("dispatch action %q: %w", name, err)
 	}
 	return result, nil
 }

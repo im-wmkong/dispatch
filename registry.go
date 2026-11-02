@@ -2,32 +2,28 @@ package dispatch
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 	"sync"
 )
 
-// Registry stores the static mapping from action name to invoker for one input
-// type. It accepts registrations until a Dispatcher is created from it.
-type Registry[I any] struct {
-	mu       sync.RWMutex
-	sealed   bool
-	invokers map[string]invoker[I]
+// Registry stores actions with matching Input and Output types. Actions can have
+// different Params types, while their input and output types must match at compile time.
+// It supports concurrent registrations, removals, and lookups.
+type Registry[Input, Output any] struct {
+	mu      sync.RWMutex
+	actions map[string]invoker[Input, Output]
 }
 
-func NewRegistry[I any]() *Registry[I] {
-	return &Registry[I]{invokers: make(map[string]invoker[I])}
+// NewRegistry creates an empty Registry for use with NewDispatcher.
+// Use New to create a Dispatcher with its own Registry.
+func NewRegistry[Input, Output any]() *Registry[Input, Output] {
+	return &Registry[Input, Output]{actions: make(map[string]invoker[Input, Output])}
 }
 
-// Register associates an action name with a strongly typed Binder and Handler.
-// I, P, and R are inferred from the arguments at the call site.
-func Register[I, P, R any](
-	registry *Registry[I],
-	name string,
-	binder Binder[I, P],
-	handler Handler[P, R],
-) error {
-	if registry == nil {
+// Register validates an Action definition and stores its invoker under a unique name.
+// Create definitions with NewAction to retain compile-time parameter checks.
+func (r *Registry[Input, Output]) Register(name string, action Action[Input, Output]) error {
+	if r == nil {
 		return fmt.Errorf("%w: registry is nil", ErrInvalidAction)
 	}
 	if strings.TrimSpace(name) == "" {
@@ -36,68 +32,43 @@ func Register[I, P, R any](
 	if strings.TrimSpace(name) != name {
 		return fmt.Errorf("%w: name has surrounding whitespace", ErrInvalidAction)
 	}
-	if isNil(binder) {
-		return fmt.Errorf("%w: binder for %q is nil", ErrInvalidAction, name)
+	if action.definition == nil || action.invoker == nil {
+		return fmt.Errorf("%w: action for %q is uninitialized", ErrInvalidAction, name)
 	}
-	if isNil(handler) {
-		return fmt.Errorf("%w: handler for %q is nil", ErrInvalidAction, name)
+	if err := action.definition.validate(); err != nil {
+		return fmt.Errorf("register action %q: %w", name, err)
 	}
-	if !isStructType(reflect.TypeFor[P]()) {
-		return fmt.Errorf("%w: params for %q must be a struct or pointer to struct", ErrInvalidAction, name)
-	}
-	return registry.register(name, typedInvoker[I, P, R]{
-		binder:  binder,
-		handler: handler,
-	})
-}
-
-func (r *Registry[I]) register(name string, actionInvoker invoker[I]) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	if r.sealed {
-		return fmt.Errorf("%w: %q", ErrRegistrySealed, name)
-	}
-	if _, exists := r.invokers[name]; exists {
+	if _, exists := r.actions[name]; exists {
 		return fmt.Errorf("%w: %q", ErrDuplicateAction, name)
 	}
-	if r.invokers == nil {
-		r.invokers = make(map[string]invoker[I])
+	if r.actions == nil {
+		r.actions = make(map[string]invoker[Input, Output])
 	}
-	r.invokers[name] = actionInvoker
+	r.actions[name] = action.invoker
 	return nil
 }
 
-func (r *Registry[I]) seal() {
+// Unregister removes an action's name mapping. Subsequent lookups will not find
+// it until it is registered again. Calls that already obtained the invoker
+// continue independently; Unregister neither waits for them nor closes resources.
+func (r *Registry[Input, Output]) Unregister(name string) error {
+	if r == nil {
+		return fmt.Errorf("%w: registry is nil", ErrInvalidAction)
+	}
 	r.mu.Lock()
-	r.sealed = true
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+	if _, exists := r.actions[name]; !exists {
+		return fmt.Errorf("%w: %q", ErrActionNotFound, name)
+	}
+	delete(r.actions, name)
+	return nil
 }
 
-func (r *Registry[I]) lookup(name string) (invoker[I], bool) {
+func (r *Registry[Input, Output]) lookup(name string) (invoker[Input, Output], bool) {
 	r.mu.RLock()
-	actionInvoker, exists := r.invokers[name]
+	action, exists := r.actions[name]
 	r.mu.RUnlock()
-	return actionInvoker, exists
-}
-
-func isStructType(valueType reflect.Type) bool {
-	if valueType.Kind() == reflect.Pointer {
-		valueType = valueType.Elem()
-	}
-	return valueType.Kind() == reflect.Struct
-}
-
-func isNil(value any) bool {
-	if value == nil {
-		return true
-	}
-
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return reflected.IsNil()
-	default:
-		return false
-	}
+	return action, exists
 }
